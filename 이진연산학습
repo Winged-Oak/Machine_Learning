@@ -1,0 +1,170 @@
+#define _CRT_NO_SERCURE_WARNINGS
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <time.h>
+
+#define INPUTCELLNO 4
+#define HIDDENNODENO 6
+#define OUTPUTCELLNO 3
+#define DATASETNO 7
+#define RUNNINGRATE 10                                  // CPU is running
+#define ERR 0.001
+#define MAXREPNUM 500000
+#define PROBNUM 8
+
+double rand1();
+double f(double x);
+double forward1(int e[][INPUTCELLNO], double w1[][HIDDENNODENO], double b1[], int i, int k);
+double forward2(double hx[][HIDDENNODENO], double w2[][OUTPUTCELLNO], double b2[], int i, int k);
+double costcalc(int d[][OUTPUTCELLNO], double ox[][OUTPUTCELLNO]);
+void costprint(int count, double cost);
+void eduprint(int e[][INPUTCELLNO], int d[][OUTPUTCELLNO], double hx[][HIDDENNODENO], double ox[][OUTPUTCELLNO], double w1[][HIDDENNODENO],
+	double w2[][OUTPUTCELLNO], double b1[], double b2[]);
+void probsolve(int exam[][INPUTCELLNO], double w1[][HIDDENNODENO], double w2[][OUTPUTCELLNO], double b1[], double b2[]);
+
+int main() {
+	double w1[INPUTCELLNO][HIDDENNODENO]; double w2[HIDDENNODENO][OUTPUTCELLNO];                // weight factor
+	double b1[HIDDENNODENO]; double b2[OUTPUTCELLNO];                                           // bias
+	double ox[DATASETNO][OUTPUTCELLNO]; double hx[DATASETNO][HIDDENNODENO];                     // cell's output
+	double cost = ERR + 1;                                                                      // for enter while loop
+	int e[DATASETNO][INPUTCELLNO] = { {0,0,0,1},{1,1,0,1},{1,0,1,0},                 // education data
+	{0,1,0,1},{1,0,0,1}, {1,1,1,1}, {0,1,0,0} };
+	int d[DATASETNO][OUTPUTCELLNO] = {  {0,0,1},{1,0,0},{1,0,0},                        // desired data
+	{0,1,0},{0,1,1}, {1,1,0},{0,0,1} };
+	int exam[PROBNUM][INPUTCELLNO] = { {1,1,0,0}, {1,0,0,1}, {0,1,1,1}, {0,1,1,0},              // problem data machine will solve
+	{0,0,1,1}, {1,1,0,0,},{1,1,1,0}, {1,0,1,1} };
+	int i, j, k;
+	int count = 0; double breakcondition = 0;
+
+	/* initialize w, b */
+	for (i = 0; i < HIDDENNODENO; ++i) {
+		for (j = 0; j < INPUTCELLNO; ++j)
+			w1[j][i] = 0.1*(rand1() - 0.5);
+		b1[i] = 0.1*(rand1() - 0.5);
+	}
+	for (i = 0; i < OUTPUTCELLNO; ++i) {
+		for (j = 0; j < HIDDENNODENO; ++j)
+			w2[j][i] = 0.1*(rand1() - 0.5);
+		b2[i] = 0.1*(rand1() - 0.5);
+	}
+
+	/* gradient-descent */
+	while (cost > ERR) {
+		double delta1[DATASETNO][HIDDENNODENO] = { 0 };
+		double delta2[DATASETNO][OUTPUTCELLNO] = { 0 };
+		cost = 0;
+		for (k = 0; k < DATASETNO; ++k) {
+			/* forward */
+			for (i = 0; i < HIDDENNODENO; ++i)
+				hx[k][i] = forward1(e, w1, b1, i, k);
+			for (i = 0; i < OUTPUTCELLNO; ++i)
+				ox[k][i] = forward2(hx, w2, b2, i, k);
+			/* backpropagation */
+			for (i = 0; i < OUTPUTCELLNO; ++i)
+				delta2[k][i] = (d[k][i] - ox[k][i])*(ox[k][i])*(1 - ox[k][i]);
+			for (i = 0; i < HIDDENNODENO; ++i) {
+				for (j = 0; j < OUTPUTCELLNO; ++j)
+					delta1[k][i] += w2[i][j] * (delta1[k][j]) * (hx[k][i]) * (1 - hx[k][i]);
+			}
+			for (i = 0; i < OUTPUTCELLNO; ++i) {
+				for (j = 0; j < HIDDENNODENO; ++j)
+					w2[j][i] += RUNNINGRATE * (delta2[k][i]) * (hx[k][j]);
+				b2[i] += RUNNINGRATE * (delta2[k][i]);
+			}
+			for (i = 0; i < HIDDENNODENO; ++i) {
+				for (j = 0; j < INPUTCELLNO; ++j)
+					w1[j][i] += RUNNINGRATE * (delta1[k][i]) * (e[k][j]);
+				b1[i] += RUNNINGRATE * (delta1[k][i]);
+			}
+		}
+		/* cost */
+		cost = costcalc(d, ox);
+		costprint(count, cost);
+		/* break */
+		if (count == MAXREPNUM || breakcondition == cost) break;
+		if (count % 50000 == 0)
+			breakcondition = cost;
+		++count;
+	}
+	printf("\n\n");
+	/* result of learning */
+	eduprint(e, d, hx, ox, w1, w2, b1, b2);
+	/* with other problems */
+	probsolve(exam, w1, w2, b1, b2);
+	return 0;
+}
+
+double rand1() {              
+	return (double)rand() / RAND_MAX;
+}
+double f(double x) {
+	return 1 / (1 + exp(-x));
+}
+double forward1(int e[][INPUTCELLNO], double w1[][HIDDENNODENO], double b1[], int i, int k) {
+	int lj;  double lhx = 0;;
+	for (lj = 0; lj < INPUTCELLNO; ++lj)
+		lhx += e[k][lj] * w1[lj][i];
+	lhx = f(lhx + b1[i]);
+	return lhx;
+}
+double forward2(double hx[][HIDDENNODENO], double w2[][OUTPUTCELLNO], double b2[], int i, int k) {
+	int lj;  double lox = 0;;
+	for (lj = 0; lj < HIDDENNODENO; ++lj)
+		lox += w2[lj][i] * hx[k][lj];
+	lox = f(lox + b2[i]);
+	return lox;
+}
+double costcalc(int d[][OUTPUTCELLNO], double ox[][OUTPUTCELLNO]) {
+	int li, lj; double lcost = 0;
+	for (li = 0; li < DATASETNO; ++li) {
+		for (lj = 0; lj < OUTPUTCELLNO; ++lj)
+			lcost += pow(d[li][lj] - ox[li][lj], 2);
+	}
+	lcost *= 1 / (2 * (double)DATASETNO);
+	return lcost;
+}
+void costprint(int count, double cost) {
+	printf("%d : %lf    ", count, cost);
+	if (count != 0) {
+		if ((count+1 )% 4 == 0) printf("\n");
+	}
+}
+void eduprint(int e[][INPUTCELLNO], int d[][OUTPUTCELLNO], double hx[][HIDDENNODENO], double ox[][OUTPUTCELLNO], double w1[][HIDDENNODENO],
+	double w2[][OUTPUTCELLNO], double b1[], double b2[]) {
+	int li, lk;
+	printf("학습 결과\n");
+	for (lk = 0; lk < DATASETNO; ++lk) {
+		for (li = 0; li < INPUTCELLNO; ++li)
+			printf("%d ", e[lk][li]);
+		printf(" >>> ");
+		for (li = 0; li < HIDDENNODENO; ++li)
+			hx[lk][li] = forward1(e, w1, b1, li, lk);
+		for (li = 0; li < OUTPUTCELLNO; ++li) {
+			ox[lk][li] = forward2(hx, w2, b2, li, lk);
+			printf("%lf ", ox[lk][li]);
+		}
+		printf("| ");
+		for (li = 0; li < OUTPUTCELLNO; ++li)
+			printf("%d ", d[lk][li]);
+		printf("\n");
+	}
+	printf("\n");
+}
+void probsolve(int exam[][INPUTCELLNO], double w1[][HIDDENNODENO], double w2[][OUTPUTCELLNO], double b1[], double b2[]) {
+	double lexamhx[PROBNUM][HIDDENNODENO]; double lexamox[PROBNUM][OUTPUTCELLNO];
+	int li, lk;
+	printf("문제 풀이 결과\n");
+	for (lk = 0; lk < PROBNUM; ++lk) {
+		for (li = 0; li < INPUTCELLNO; ++li)
+			printf("%d ", exam[lk][li]);
+		printf(" >>> ");
+		for (li = 0; li < HIDDENNODENO; ++li)
+			lexamhx[lk][li] = forward1(exam, w1, b1, li, lk);
+		for (li = 0; li < OUTPUTCELLNO; ++li) {
+			lexamox[lk][li] = forward2(lexamhx, w2, b2, li, lk);
+			printf("%lf ", lexamox[lk][li]);
+		}
+		printf("\n");
+	}
+}
