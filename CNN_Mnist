@@ -1,1 +1,229 @@
+# 선언 #
 
+import tensorflow as tf
+import numpy as np
+import copy
+import matplotlib.pyplot as plt
+from tensorflow.examples.tutorials.mnist import input_data
+mnist = input_data.read_data_sets("./mnist/data/", one_hot=True)
+
+LR = 0.1                                # learning rate
+VE = 5                                  # Variational Epoch
+DE = 150                                # DeNoising Epoch
+TE = 70                                 # Training Epoch
+BS = 100                                # Batch size, 매번 학습시킬 데이터 갯수
+SS = 10                                 # Sample size
+TB = int(mnist.train.num_examples/BS)   # Total batch, TB*BS = 전체 데이터
+N1 = 28*28; N3 = 14*28; N5 = 28*28      # Number of Denoiser node      
+
+TB_xs, TB_ys = mnist.train.next_batch(mnist.train.num_examples)       # 55000개의 전체 학습 데이터
+TB_xs2, TB_ys2 = copy.deepcopy(TB_xs[:]), copy.deepcopy(TB_ys[:])     # noise 추가할 데이터
+
+print(TB_xs.shape,TB_ys.shape)
+print(TB_xs2.shape, TB_ys2.shape)
+print(id(TB_xs), id(TB_ys))                                            # 독립적 메모리 이용 확인 ( 디노이즈 교사데이터를 위함 )
+print(id(TB_xs2), id(TB_ys2))
+
+
+
+# Variaion maker 로 noise 입히기 
+
+VX = tf.placeholder(tf.float32, [None, 28*28])
+
+EW = tf.Variable(tf.random_normal([28*28, 64]))
+EB = tf.Variable(tf.random_normal([64]))
+EC = tf.nn.sigmoid(tf.add(tf.matmul(VX, EW), EB))
+
+DW = tf.Variable(tf.random_normal([64, 28*28]))
+DB = tf.Variable(tf.random_normal([28*28]))
+DC = tf.nn.sigmoid(tf.add(tf.matmul(EC, DW), DB))
+
+Vcost = tf.reduce_mean(tf.pow(VX - DC, 2))
+Voptimizer = tf.train.RMSPropOptimizer(LR).minimize(Vcost)
+
+Vinit = tf.global_variables_initializer()
+Vsess = tf.Session()
+Vsess.run(Vinit)
+
+for i in range(VE):
+    VTC = 0
+    for j in range(TB):
+        Vbatch_xs, Vbatch_ys = mnist.train.next_batch(BS)
+        _, Vcostval = Vsess.run([Voptimizer, Vcost], feed_dict = { VX : Vbatch_xs })
+        VTC += Vcostval
+    print('Variational Epoch :', '%03d' % (i+1), ', Avg_cost =', '{:.4f}'.format(VTC/TB))
+print('complete!')
+
+
+# 노이즈 상태 확인
+
+TB_xs2 = Vsess.run(DC, feed_dict = {VX  : TB_xs2})        # xs2 : noisy data
+fig, ax = plt.subplots(2, SS, figsize=(SS,2))
+for i in range(SS):
+    ax[0][i].set_axis_off()
+    ax[1][i].set_axis_off()
+    ax[0][i].imshow(np.reshape(TB_xs[i], (28, 28)))      # 원본
+    ax[1][i].imshow(np.reshape(TB_xs2[i], (28, 28)))     # noise
+    
+    
+    # Denoising 학습
+
+DX = tf.placeholder(tf.float32, [None, 28*28])         # noisy data
+origin_X = tf.placeholder(tf.float32, [None, 28*28])   # original data
+
+EW1 = tf.Variable(tf.random_normal([N1, N3]))
+EB1 = tf.Variable(tf.random_normal([N3]))
+EC1 = tf.nn.sigmoid(tf.add(tf.matmul(DX,EW1), EB1))
+DW2 = tf.Variable(tf.random_normal([N3,N5]))
+DB2 = tf.Variable(tf.random_normal([N5]))
+DC2 = tf.nn.sigmoid(tf.add(tf.matmul(EC1, DW2), DB2))
+
+Dcost = tf.reduce_mean(tf.pow(origin_X-DC2,2))
+Doptimizer = tf.train.RMSPropOptimizer(LR).minimize(Dcost)
+Dinit = tf.global_variables_initializer()
+Dsess = tf.Session()
+Dsess.run(Dinit)
+
+for i in range(DE):
+    DTC = 0
+    for j in range(TB):
+        Dbatch_xs, batch_xs = TB_xs2[100*j:100*(j+1)], TB_xs[100*j:100*(j+1)]
+        _, Dcostval = Dsess.run([Doptimizer, Dcost], feed_dict = {DX : Dbatch_xs, origin_X : batch_xs})
+        DTC += Dcostval
+    print('Denoise Epoch :', '%04d' % (i+1), ', Avg cost =', '{:.4f}'.format(DTC/TB))
+print('complete!')
+
+
+# 디노이즈 상태 확인 및 전체 디노이징
+
+Samples2 = Dsess.run(DC2, feed_dict = {DX : TB_xs2[:SS]})  # 55000개의 학습 데이터를 NE번 훑어 학습한 Denoiser를 테스트 데이터에 도입
+fig, ax = plt.subplots(3, SS, figsize=(SS,3))
+for i in range(SS):
+    ax[0][i].set_axis_off()
+    ax[1][i].set_axis_off()
+    ax[2][i].set_axis_off()
+    ax[0][i].imshow(np.reshape(TB_xs[i], (28, 28)))      # 원본
+    ax[1][i].imshow(np.reshape(TB_xs2[i], (28, 28)))     # noisy data
+    ax[2][i].imshow(np.reshape(Samples2[i], (28, 28)))   # denoised data
+
+TB_xs2 = Dsess.run(DC2, feed_dict = {DX : TB_xs2})       # Origin - Noisy - Denoised
+
+
+# CNN 학습 # Denoisde data에 대해
+
+X = tf.placeholder(tf.float32, [None, 28, 28, 1])
+Y = tf.placeholder(tf.float32, [None, 10])
+drop = tf.placeholder(tf.float32)       # 1-drop = Dropout probability
+
+W1 = tf.Variable(tf.random_normal([3, 3, 1, 30], stddev = 0.01)) # tf.Variable(tf.random_normal([3, 3, 1, 32], stddev = 0.01))
+L1 = tf.nn.conv2d(X, W1, strides = [1,1,1,1], padding = 'SAME')
+L1 = tf.nn.relu(L1)
+L1 = tf.nn.max_pool(L1, ksize = [1,2,2,1], strides = [1,2,2,1], padding = 'SAME')
+W2 = tf.Variable(tf.random_normal([3,3,30,56], stddev = 0.01))   # tf.Variable(tf.random_normal([3,3,32,64], stddev = 0.01))
+L2 = tf.nn.conv2d(L1, W2, strides = [1,1,1,1], padding = 'SAME')
+L2 = tf.nn.relu(L2)
+L2 = tf.nn.max_pool(L2, ksize=[1,2,2,1], strides = [1,2,2,1], padding = 'SAME')
+
+W3 = tf.Variable(tf.random_normal([7*7*56, 256], stddev = 0.01))  # tf.Variable(tf.random_normal([7*7*64, 256], stddev = 0.01))
+L3 = tf.reshape(L2, [-1, 7*7*56])
+L3 = tf.matmul(L3, W3)
+L3 = tf.nn.relu(L3)
+L3 = tf.nn.dropout(L3, drop)
+W4 = tf.Variable(tf.random_normal([256, 10], stddev = 0.01))
+
+model = tf.matmul(L3, W4)
+cost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=model, labels=Y))
+optimizer = tf.train.AdamOptimizer(0.001).minimize(cost)
+
+init = tf.global_variables_initializer()
+sess = tf.Session()
+sess.run(init)
+
+# Training
+for i in range(TE):
+    TC = 0
+    
+    for j in range(TB):
+        B_xs, B_ys = TB_xs2[BS*j:BS*(j+1)], TB_ys2[BS*j:BS*(j+1)]
+        B_xs = B_xs.reshape(-1,28,28,1)
+        _, lcost = sess.run([optimizer, cost], feed_dict = {X:B_xs, Y:B_ys, drop : 0.8})
+        TC += lcost
+    
+    print('CNN Training Epoch :', '%04d' % (i+1), ', avg_cost =', '{:.3f}'.format(TC/TB))
+    
+    
+    # CNN 학습 # Original에 대해
+
+OX = tf.placeholder(tf.float32, [None, 28, 28, 1])
+OY = tf.placeholder(tf.float32, [None, 10])
+Odrop = tf.placeholder(tf.float32)       # 1-Drop = Dropout probability
+
+OW1 = tf.Variable(tf.random_normal([3, 3, 1, 32], stddev = 0.01))
+OL1 = tf.nn.conv2d(OX, OW1, strides = [1,1,1,1], padding = 'SAME')
+OL1 = tf.nn.relu(OL1)
+OL1 = tf.nn.max_pool(OL1, ksize = [1,2,2,1], strides = [1,2,2,1], padding = 'SAME')
+OW2 = tf.Variable(tf.random_normal([3,3,32,64], stddev = 0.01))
+OL2 = tf.nn.conv2d(OL1, OW2, strides = [1,1,1,1], padding = 'SAME')
+OL2 = tf.nn.relu(OL2)
+OL2 = tf.nn.max_pool(OL2, ksize=[1,2,2,1], strides = [1,2,2,1], padding = 'SAME')
+
+OW3 = tf.Variable(tf.random_normal([7*7*64, 256], stddev = 0.01))
+OL3 = tf.reshape(OL2, [-1, 7*7*64])
+OL3 = tf.matmul(OL3, OW3)
+OL3 = tf.nn.relu(OL3)
+OL3 = tf.nn.dropout(OL3, Odrop)
+OW4 = tf.Variable(tf.random_normal([256, 10], stddev = 0.01))
+
+Omodel = tf.matmul(OL3, OW4)
+Ocost = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits_v2(logits=Omodel, labels=OY))
+Ooptimizer = tf.train.AdamOptimizer(0.001).minimize(Ocost)
+
+Oinit = tf.global_variables_initializer()
+Osess = tf.Session()
+Osess.run(Oinit)
+
+# Training
+for i in range(35):
+    TC = 0
+    
+    for j in range(TB):
+        B_xs, B_ys = mnist.train.next_batch(BS)
+        B_xs = B_xs.reshape(-1,28,28,1)
+        _, lcost = Osess.run([Ooptimizer, Ocost], feed_dict = {OX:B_xs, OY:B_ys, Odrop : 0.9})
+        TC += lcost
+    
+    print('CNN Training Epoch2 :', '%04d' % (i+1), ', avg_cost =', '{:.3f}'.format(TC/TB))
+    
+    
+    # 학습된 CNN test
+
+fig, ax = plt.subplots(3, SS, figsize=(SS,3))
+for i in range(SS):
+    ax[0][i].set_axis_off()
+    ax[1][i].set_axis_off()
+    ax[2][i].set_axis_off()
+    
+TB_xs3, TB_ys3 = mnist.test.next_batch(mnist.test.num_examples)       # 10000개의 테스트 데이터
+for i in range(SS):
+    ax[0][i].imshow(np.reshape(TB_xs3[i], (28, 28))
+is_correct1 = tf.equal(tf.argmax(model, 1), tf.argmax(Y, 1))          # original test data에 대한 학습된 CNN 정확도
+accuracy1 = tf.reduce_mean(tf.cast(is_correct1, tf.float32))
+print('accuracy1:', sess.run(accuracy1, feed_dict = {X:TB_xs3.reshape(-1,28,28,1), Y:TB_ys3, drop :1}))
+
+TB_xs3 = Vsess.run(DC, feed_dict = {VX : TB_xs3})                     # test data에 noise 입히기
+for i in range(SS):
+    ax[1][i].imshow(np.reshape(TB_xs3[i], (28, 28))
+is_correct2 = tf.equal(tf.argmax(model, 1), tf.argmax(Y, 1))          # original - noised test data의 학습된 CNN 정확도
+accuracy2 = tf.reduce_mean(tf.cast(is_correct2, tf.float32))
+print('accuracy2:', sess.run(accuracy2, feed_dict = {X:TB_xs3.reshape(-1,28,28,1), Y:TB_ys3, drop :1}))
+
+TB_xs3 = Dsess.run(DC2, feed_dict = {DX : TB_xs3})                    # noisy data를 denoising
+for i in range(SS):
+    ax[2][i].imshow(np.reshape(TB_xs3[i], (28, 28))
+is_correct3 = tf.equal(tf.argmax(model, 1), tf.argmax(Y, 1))          # original - noisy - denoised data의 학습된 (denoised)CNN의 정확도
+accuracy3 = tf.reduce_mean(tf.cast(is_correct3, tf.float32))
+print('accuracy3:', sess.run(accuracy3, feed_dict = {X:TB_xs3.reshape(-1,28,28,1), Y:TB_ys3, drop :1}))
+
+is_correct4 = tf.equal(tf.argmax(Omodel, 1), tf.argmax(OY, 1))        # original - noisy - denoised data의 학습된 (origin)CNN의 정확도
+accuracy4 = tf.reduce_mean(tf.cast(is_correct4, tf.float32))
+print('accuracy4:', Osess.run(accuracy4, feed_dict = {OX:TB_xs3.reshape(-1,28,28,1), OY:TB_ys3, Odrop :1}))
